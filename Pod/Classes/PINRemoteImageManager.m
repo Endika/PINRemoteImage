@@ -93,7 +93,6 @@ typedef void (^PINRemoteImageManagerDataCompletion)(NSData *data, NSError *error
 
 @interface PINRemoteImageManager () <PINURLSessionManagerDelegate>
 {
-    dispatch_queue_t _concurrentQueue;
     dispatch_queue_t _callbackQueue;
     NSLock *_lock;
     NSOperationQueue *_concurrentOperationQueue;
@@ -142,22 +141,20 @@ typedef void (^PINRemoteImageManagerDataCompletion)(NSData *data, NSError *error
         self.cache = [self defaultImageCache];
         NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
         
-        _concurrentQueue = dispatch_queue_create("PINRemoteImageManagerConcurrentQueue", DISPATCH_QUEUE_CONCURRENT);
         _callbackQueue = dispatch_queue_create("PINRemoteImageManagerCallbackQueue", DISPATCH_QUEUE_CONCURRENT);
         _lock = [[NSLock alloc] init];
         _lock.name = @"PINRemoteImageManager";
         _concurrentOperationQueue = [[NSOperationQueue alloc] init];
         _concurrentOperationQueue.name = @"PINRemoteImageManager Concurrent Operation Queue";
         _concurrentOperationQueue.maxConcurrentOperationCount = NSOperationQueueDefaultMaxConcurrentOperationCount;
-#if defined(__IPHONE_8_0)
-        _concurrentOperationQueue.qualityOfService = NSQualityOfServiceBackground;
-#endif
+        if ([[self class] isiOS8OrGreater]) {
+            _concurrentOperationQueue.qualityOfService = NSQualityOfServiceBackground;
+        }
         _urlSessionTaskQueue = [[NSOperationQueue alloc] init];
         _urlSessionTaskQueue.name = @"PINRemoteImageManager Concurrent URL Session Task Queue";
         _urlSessionTaskQueue.maxConcurrentOperationCount = 10;
         
         self.sessionManager = [[PINURLSessionManager alloc] initWithSessionConfiguration:configuration];
-        self.sessionManager.completionQueue = _concurrentQueue;
         self.sessionManager.delegate = self;
         
         self.estimatedRemainingTimeThreshold = 0.0;
@@ -393,6 +390,7 @@ typedef void (^PINRemoteImageManagerDataCompletion)(NSData *data, NSError *error
          [strongSelf lock];
              //check canceled tasks first
              if ([strongSelf.canceledTasks containsObject:UUID]) {
+                 [strongSelf unlock];
                  return;
              }
              [strongSelf.canceledTasks removeAllObjects];
@@ -785,7 +783,7 @@ typedef void (^PINRemoteImageManagerDataCompletion)(NSData *data, NSError *error
                 [strongSelf lock];
                     typeof(self) strongSelf = weakSelf;
                     PINRemoteImageDownloadTask *task = [strongSelf.tasks objectForKey:key];
-                    [task callCompletionsWithQueue:strongSelf.callbackQueue remove:NO withImage:image animatedImage:animatedImage cached:NO error:error];
+                    [task callCompletionsWithQueue:strongSelf.callbackQueue remove:NO withImage:image animatedImage:animatedImage cached:NO error:remoteImageError];
                     [strongSelf.tasks removeObjectForKey:key];
                 [strongSelf unlock];
             }
@@ -1009,14 +1007,20 @@ typedef void (^PINRemoteImageManagerDataCompletion)(NSData *data, NSError *error
     [self unlock];
     
     [progressiveImage updateProgressiveImageWithData:data expectedNumberOfBytes:[dataTask countOfBytesExpectedToReceive]];
-    if (hasProgressBlocks && [self isiOS8OrGreater]) {
-        UIImage *progressImage = [progressiveImage currentImage];
-        if (progressImage) {
-            [self lock];
-                task = [self.tasks objectForKey:[self cacheKeyForURL:[[dataTask originalRequest] URL] processorKey:nil]];
-                [task callProgressWithQueue:_callbackQueue withImage:progressImage];
-            [self unlock];
-        }
+
+    if (hasProgressBlocks && [[self class] isiOS8OrGreater]) {
+        __weak typeof(self) weakSelf = self;
+        [_concurrentOperationQueue pin_addOperationWithQueuePriority:PINRemoteImageManagerPriorityLow block:^{
+            typeof(self) strongSelf = weakSelf;
+            UIImage *progressImage = [progressiveImage currentImage];
+            if (progressImage) {
+                [strongSelf lock];
+                    NSString *cacheKey = [strongSelf cacheKeyForURL:[[dataTask originalRequest] URL] processorKey:nil];
+                    PINRemoteImageDownloadTask *task = strongSelf.tasks[cacheKey];
+                    [task callProgressWithQueue:strongSelf.callbackQueue withImage:progressImage];
+                [strongSelf unlock];
+            }
+        }];
     }
 }
 
@@ -1208,7 +1212,7 @@ typedef void (^PINRemoteImageManagerDataCompletion)(NSData *data, NSError *error
 #pragma mark - Helpers
 
 
-- (BOOL)isiOS8OrGreater
++ (BOOL)isiOS8OrGreater
 {
     static BOOL isiOS8OrGreater;
     static dispatch_once_t onceToken;
@@ -1238,10 +1242,14 @@ typedef void (^PINRemoteImageManagerDataCompletion)(NSData *data, NSError *error
 {
     NSBlockOperation *operation = [NSBlockOperation blockOperationWithBlock:block];
     operation.queuePriority = operationPriorityWithImageManagerPriority(priority);
-#if defined(__IPHONE_8_0)
-    operation.qualityOfService = NSOperationQualityOfServiceBackground;
+#if __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_8_0
+    if ([PINRemoteImageManager isiOS8OrGreater]) {
+        operation.qualityOfService = NSOperationQualityOfServiceBackground;
+    } else {
+        operation.threadPriority = 0.2;
+    }
 #else
-    operation.threadPriority = 0.2;
+    operation.qualityOfService = NSOperationQualityOfServiceBackground;
 #endif
     [self addOperation:operation];
 }
