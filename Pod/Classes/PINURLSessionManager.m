@@ -26,7 +26,10 @@
         self.sessionManagerLock = [[NSLock alloc] init];
         self.sessionManagerLock.name = @"PINURLSessionManager";
         self.operationQueue = [[NSOperationQueue alloc] init];
-        [self.operationQueue setMaxConcurrentOperationCount:NSOperationQueueDefaultMaxConcurrentOperationCount];
+        self.operationQueue.name = @"PINURLSessionManager Operation Queue";
+        
+        //queue must be serial to ensure proper ordering
+        [self.operationQueue setMaxConcurrentOperationCount:1];
         self.session = [NSURLSession sessionWithConfiguration:configuration delegate:self delegateQueue:self.operationQueue];
         self.completions = [[NSMutableDictionary alloc] init];
         self.delegateQueues = [[NSMutableDictionary alloc] init];
@@ -67,6 +70,32 @@
 
 #pragma mark NSURLSessionDataDelegate
 
+- (void)URLSession:(NSURLSession *)session didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition disposition, NSURLCredential *credential))completionHandler 
+{
+    if ([self.delegate respondsToSelector:@selector(didReceiveAuthenticationChallenge:forTask:completionHandler:)]) {
+        [self.delegate didReceiveAuthenticationChallenge:challenge forTask:nil completionHandler:completionHandler];
+    } else {
+        completionHandler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
+    }
+}
+
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition disposition, NSURLCredential *credential))completionHandler 
+{
+	[self lock];
+        dispatch_queue_t delegateQueue = self.delegateQueues[@(task.taskIdentifier)];
+	[self unlock];
+	
+	__weak typeof(self) weakSelf = self;
+	dispatch_async(delegateQueue, ^{
+        typeof(self) strongSelf = weakSelf;
+		if ([strongSelf.delegate respondsToSelector:@selector(didReceiveAuthenticationChallenge:forTask:completionHandler:)]) {
+			[strongSelf.delegate didReceiveAuthenticationChallenge:challenge forTask:task completionHandler:completionHandler];
+        } else {
+            completionHandler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
+        }
+	});
+}
+
 - (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)dataTask didReceiveData:(NSData *)data
 {
     [self lock];
@@ -75,7 +104,8 @@
     
     __weak typeof(self) weakSelf = self;
     dispatch_async(delegateQueue, ^{
-        [weakSelf.delegate didReceiveData:data forTask:dataTask];
+        typeof(self) strongSelf = weakSelf;
+        [strongSelf.delegate didReceiveData:data forTask:dataTask];
     });
 }
 
@@ -84,7 +114,11 @@
     [self lock];
         dispatch_queue_t delegateQueue = self.delegateQueues[@(task.taskIdentifier)];
     [self unlock];
-    
+    if (!error && [task.response isKindOfClass:[NSHTTPURLResponse class]] && [(NSHTTPURLResponse *)task.response statusCode] == 404) {
+        error = [NSError errorWithDomain:NSURLErrorDomain
+                                    code:NSURLErrorRedirectToNonExistentLocation
+                                userInfo:@{NSLocalizedDescriptionKey : @"The requested URL was not found on this server."}];
+    }
     __weak typeof(self) weakSelf = self;
     dispatch_async(delegateQueue, ^{
         typeof(self) strongSelf = weakSelf;

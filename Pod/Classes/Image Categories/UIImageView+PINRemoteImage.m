@@ -47,7 +47,7 @@
 
 - (void)pin_setImageFromURL:(NSURL *)url placeholderImage:(UIImage *)placeholderImage processorKey:(NSString *)processorKey processor:(PINRemoteImageManagerImageProcessor)processor completion:(PINRemoteImageManagerImageCompletion)completion
 {
-    [PINRemoteImageCategoryManager setImageOnView:self fromURLs:@[url] placeholderImage:placeholderImage processorKey:processorKey processor:processor completion:completion];
+    [PINRemoteImageCategoryManager setImageOnView:self fromURLs:url?@[url]:nil placeholderImage:placeholderImage processorKey:processorKey processor:processor completion:completion];
 }
 
 - (void)pin_setImageFromURLs:(NSArray *)urls
@@ -195,7 +195,7 @@
 
 - (void)setUpdateWithProgress:(BOOL)updateWithProgress
 {
-    [self setUpdateWithProgress:updateWithProgress];
+    self.pin_updateWithProgress = updateWithProgress;
 }
 
 - (void)setPlaceholderWithImage:(UIImage *)image

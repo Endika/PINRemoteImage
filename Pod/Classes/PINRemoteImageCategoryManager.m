@@ -164,18 +164,30 @@
     }
     
     [self cancelImageDownloadOnView:view];
-    if (urls == nil || urls.count == 0) {
-        [view pin_clearImages];
-        return;
-    }
-    
+  
     if (placeholderImage) {
         [view pin_setPlaceholderWithImage:placeholderImage];
     }
-    PINRemoteImageManagerDownloadOptions options = PINRemoteImageManagerDownloadOptionsNone;
+    
+    if (urls == nil || urls.count == 0) {
+        if (!placeholderImage) {
+            [view pin_clearImages];
+        }
+        return;
+    }
+    
+    PINRemoteImageManagerDownloadOptions options;
+    if([view respondsToSelector:@selector(pin_defaultOptions)]) {
+        options = [view pin_defaultOptions];
+    } else {
+        options = PINRemoteImageManagerDownloadOptionsNone;
+    }
+    
     if ([view pin_ignoreGIFs]) {
         options |= PINRemoteImageManagerDownloadOptionsIgnoreGIFs;
     }
+    
+    BOOL updateWithFullResult = [view respondsToSelector:@selector(pin_updateUIWithRemoteImageManagerResult:)];
     
     PINRemoteImageManagerImageCompletion internalProgress = nil;
     if ([self updateWithProgressOnView:view] && processorKey.length <= 0 && processor == nil) {
@@ -188,7 +200,13 @@
                     return;
                 }
                 if (result.image) {
-                    [view pin_updateUIWithImage:result.image animatedImage:nil];
+                    if (updateWithFullResult) {
+                        [view pin_updateUIWithRemoteImageManagerResult:result];
+                    }
+                    else {
+                        [view pin_updateUIWithImage:result.image animatedImage:nil];                        
+                    }
+
                 }
             };
             if ([NSThread isMainThread]) {
@@ -217,7 +235,12 @@
                 return;
             }
             
-            [view pin_updateUIWithImage:result.image animatedImage:result.animatedImage];
+            if (updateWithFullResult) {
+                [view pin_updateUIWithRemoteImageManagerResult:result];
+            }
+            else {
+                [view pin_updateUIWithImage:result.image animatedImage:result.animatedImage];
+            }
             
             if (completion) {
                 completion(result);
